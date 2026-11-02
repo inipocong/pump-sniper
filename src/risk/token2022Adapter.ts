@@ -1,4 +1,4 @@
-import { SolanaRpcClient } from "./solanaRpc.js";
+import { SolanaRpcClient, SolanaAccountInfo } from "./solanaRpc.js";
 import { parseToken2022MintExtensions, TokenExtension } from "./token2022.js";
 import { evaluateRisk } from "./engine.js";
 import type { RiskAssessment, RiskCheck, RiskPolicy } from "../types.js";
@@ -79,18 +79,22 @@ export async function assessToken2022Risk(
   mint: string,
   signature: string,
   rpc?: SolanaRpcClient,
-  policy: RiskPolicy = DEFAULT_POLICY
+  policy: RiskPolicy = DEFAULT_POLICY,
+  prefetchedAccountInfo?: SolanaAccountInfo | null
 ): Promise<Token2022AdapterResult> {
   const client = rpc ?? new SolanaRpcClient();
   const checks: RiskCheck[] = [];
   let programType: Token2022AdapterResult["programType"] = "UNKNOWN";
   let extensions: TokenExtension[] = [];
 
-  // 1. Ambil data akun mint dari RPC
-  let accountInfo: Awaited<ReturnType<SolanaRpcClient["getAccountInfo"]>>;
-  try {
-    accountInfo = await client.getAccountInfo(mint);
-  } catch (err) {
+  // 1. Ambil data akun mint dari RPC (gunakan prefetched jika tersedia)
+  let accountInfo: SolanaAccountInfo | null = null;
+  if (prefetchedAccountInfo !== undefined) {
+    accountInfo = prefetchedAccountInfo;
+  } else {
+    try {
+      accountInfo = await client.getAccountInfo(mint);
+    } catch (err) {
     checks.push({
       name: "token_program_detection",
       passed: null,
@@ -110,6 +114,7 @@ export async function assessToken2022Risk(
       programType: "UNKNOWN",
       extensions: [],
     };
+    }
   }
 
   // 2. Validasi keberadaan akun mint

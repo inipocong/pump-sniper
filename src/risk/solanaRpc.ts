@@ -159,4 +159,20 @@ export class SolanaRpcClient {
 
     return result.value ?? [];
   }
+  async getMultipleAccounts(
+    addresses: string[]
+  ): Promise<(SolanaAccountInfo | null)[]> {
+    if (addresses.length === 0) return [];
+    const result = await this.request<{
+      value: (SolanaAccountInfo | null)[];
+    }>("getMultipleAccounts", [
+      addresses,
+      {
+        encoding: "base64",
+        commitment: "confirmed"
+      }
+    ]);
+
+    return result.value ?? [];
+  }
 }

@@ -24,6 +24,7 @@ export interface DecodedCreateV2 {
   symbol: string;
   metadataUri: string;
 }
+const CREATE_DISC = createHash("sha256").update("global:create").digest().subarray(0, 8);
 const CREATE_V2_DISC = createHash("sha256").update("global:create_v2").digest().subarray(0, 8);
 
 function readU32LE(buf: Buffer, offset: number): number {
@@ -70,16 +71,23 @@ export function decodeCreateV2Transaction(tx: RpcTransaction, signature: string,
     if (resolveProgramId(ix, keys) !== pumpProgramId) continue;
     let bytes: Buffer;
     try { bytes = Buffer.from(bs58.decode(ix.data)); } catch { continue; }
-    if (bytes.length < 8 || !bytes.subarray(0, 8).equals(CREATE_V2_DISC)) continue;
+    if (bytes.length < 8) continue;
+    const isV2 = bytes.subarray(0, 8).equals(CREATE_V2_DISC);
+    const isV1 = bytes.subarray(0, 8).equals(CREATE_DISC);
+    if (!isV2 && !isV1) continue;
     const accounts = resolveAccounts(ix, keys);
-    // Official create_v2 account list: mint is #1, bonding_curve is #3 (1-based).
-    if (accounts.length < 16) throw new Error(`create_v2 ${signature}: expected >=16 accounts, got ${accounts.length}`);
+    if (accounts.length < 14) continue;
     const state = { offset: 8 };
     const name = readString(bytes, state);
     const symbol = readString(bytes, state);
     const metadataUri = readString(bytes, state);
-    if (state.offset + 32 + 1 > bytes.length) throw new Error("Truncated create_v2 creator/bool arguments");
-    const creator = bs58.encode(bytes.subarray(state.offset, state.offset + 32));
+    let creator = "";
+    if (isV2 && state.offset + 32 <= bytes.length) {
+      creator = bs58.encode(bytes.subarray(state.offset, state.offset + 32));
+    } else {
+      // In create v1, user account is at index 7
+      creator = accounts[7] ?? accounts[accounts.length - 1] ?? "";
+    }
     return {
       mint: accounts[0],
       bondingCurve: accounts[2],

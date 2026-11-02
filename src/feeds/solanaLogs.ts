@@ -31,6 +31,8 @@ export class SolanaLogsFeed {
   private reconnect?: NodeJS.Timeout;
   private priceMonitorInterval?: NodeJS.Timeout;
   private heartbeatInterval?: NodeJS.Timeout;
+  private pingInterval?: NodeJS.Timeout;
+  private seenSignatures = new Set<string>();
   private rpc: SolanaRpcClient;
   private ctoTracker = new CtoReboundTracker();
   private preJeetCandidates = new Map<
@@ -68,6 +70,7 @@ export class SolanaLogsFeed {
     if (this.reconnect) clearTimeout(this.reconnect);
     if (this.priceMonitorInterval) clearInterval(this.priceMonitorInterval);
     if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
+    if (this.pingInterval) clearInterval(this.pingInterval);
     this.ws?.close();
   }
 
@@ -86,6 +89,10 @@ export class SolanaLogsFeed {
 
     this.ws.on("open", () => {
       this.reconnectDelay = 3000;
+      if (this.pingInterval) clearInterval(this.pingInterval);
+      this.pingInterval = setInterval(() => {
+        if (this.ws?.readyState === WebSocket.OPEN) this.ws.ping();
+      }, 25000);
       // 1. Subscribe ke Peluncuran Token Pump.fun
       this.ws?.send(
         JSON.stringify({
@@ -158,10 +165,17 @@ export class SolanaLogsFeed {
       const signature = value?.signature as string | undefined;
       if (!signature || value?.err) return;
 
+      if (this.seenSignatures.has(signature)) return;
+      this.seenSignatures.add(signature);
+      if (this.seenSignatures.size > 5000) {
+        const first = this.seenSignatures.values().next().value;
+        if (first) this.seenSignatures.delete(first);
+      }
+
       if (this.store.hasCandidate(signature)) return;
 
       const logs: string[] = value.logs ?? [];
-      const isPump = logs.some(line => /Instruction:\s*CreateV2/i.test(line));
+      const isPump = logs.some(line => /Instruction:\s*(?:Create|CreateV2)\b/i.test(line) && !/Create(?:Idempotent|Account)/i.test(line));
       const isMoonshot = logs.some(line => /Instruction:\s*(TokenMint|tokenMint)/i.test(line));
       const isGraduation = logs.some(line => /Instruction:\s*(Migrate|migrate|Initialize2)/i.test(line));
 
@@ -171,12 +185,12 @@ export class SolanaLogsFeed {
       const response = await fetch(config.rpcUrl, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        signal: AbortSignal.timeout(3500), // Timeout 3.5s anti-hang!
+        signal: AbortSignal.timeout(2500), // Timeout 2.5s sat-set!
         body: JSON.stringify({
           jsonrpc: "2.0",
           id: this.nextId++,
           method: "getTransaction",
-          params: [signature, { encoding: "json", commitment: "confirmed", maxSupportedTransactionVersion: 0 }],
+          params: [signature, { encoding: "json", commitment: "confirmed", maxSupportedTransactionVersion: 1 }],
         }),
       });
 
@@ -235,10 +249,15 @@ export class SolanaLogsFeed {
 
       this.store.addCandidate(candidate);
 
-      // 1. Eksekusi pengecekan Token Security & Bonding Curve secara PARALEL (Kecepatan Maksimal)
+      // 1. Batch fetch data akun Mint & Bonding Curve sekaligus dalam 1 roundtrip network (~30ms sat-set)
+      const [mintAcc, curveAcc] = await this.rpc.getMultipleAccounts([
+        decodedCandidate.mint,
+        decodedCandidate.bondingCurve,
+      ]);
+
       const [{ assessment: tokenSecurity }, curveData] = await Promise.all([
-        assessToken2022Risk(decodedCandidate.mint, signature, this.rpc),
-        getBondingCurveMetrics(this.rpc, decodedCandidate.bondingCurve),
+        assessToken2022Risk(decodedCandidate.mint, signature, this.rpc, undefined, mintAcc),
+        getBondingCurveMetrics(this.rpc, decodedCandidate.bondingCurve, curveAcc?.data),
       ]);
 
       this.store.saveRiskAssessment(tokenSecurity);

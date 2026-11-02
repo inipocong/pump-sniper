@@ -94,13 +94,19 @@ export function calculateBondingCurveMetrics(state: BondingCurveState): BondingC
  */
 export async function getBondingCurveMetrics(
   rpc: SolanaRpcClient,
-  bondingCurveAddress: string
+  bondingCurveAddress: string,
+  prefetchedData?: [string, string] | null
 ): Promise<{ state: BondingCurveState; metrics: BondingCurveMetrics } | null> {
   try {
-    const accountInfo = await rpc.getAccountInfo(bondingCurveAddress);
-    if (!accountInfo) return null;
+    let rawBase64: string | null = prefetchedData ? prefetchedData[0] : null;
+    if (!rawBase64) {
+      const accountInfo = await rpc.getAccountInfo(bondingCurveAddress);
+      if (!accountInfo) return null;
+      rawBase64 = accountInfo.data[0];
+    }
+    if (!rawBase64) return null;
 
-    const state = parseBondingCurveData(accountInfo.data[0]);
+    const state = parseBondingCurveData(rawBase64);
     const metrics = calculateBondingCurveMetrics(state);
 
     return { state, metrics };
